@@ -1,0 +1,36 @@
+# Dependências (Nunca envie para o GitHub)
+node_modules/
+jspm_packages/
+
+# Arquivos de ambiente e segredos (Contém senhas e chaves de API)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs do Node e NPM
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Pastas de Build e Saídas de Compilação (TypeScript, Next.js, Vite, etc.)
+dist/
+build/
+.next/
+.nuxt/
+out/
+.output/
+
+# Cobertura de testes
+coverage/
+.nyc_output/
+
+# Arquivos do sistema operacional / IDEs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
