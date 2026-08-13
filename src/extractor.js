@@ -75,11 +75,9 @@ export async function extrairTextoPDF(filePath) {
         for await (const imageBuffer of document) {
             const { data: { text } } = await tesseract.recognize(imageBuffer, 'por');
             
-            // --- LOG PARA INSPECIONAR O QUE O TESSERACT PUXOU ---
             console.log(`\n================== [INÍCIO OCR PÁGINA ${pageCounter}] ==================`);
             console.log(text);
             console.log(`================== [FIM OCR PÁGINA ${pageCounter}] ==================\n`);
-            // ----------------------------------------------------
 
             const linhasOCR = text.split('\n').filter(linha => linha.trim() !== '');
             
@@ -98,166 +96,240 @@ export async function extrairTextoPDF(filePath) {
     }
 }
 
-export function estruturarDados(paginas, tipo) {
-    if (tipo === 'ponto') {
-        const resultado = { pages: [] };
+// ==========================================
+// FUNÇÃO 1: CARTÃO DE PONTO
+// ==========================================
+function estruturarCartaoPonto(paginas) {
+    const resultado = { pages: [] };
 
-        let possuiColunaJornada = false;
-        paginas.forEach(p => {
-            const linhas = p.linhas || [];
-            linhas.forEach(l => {
-                const txt = l.toLowerCase();
-                if (txt.includes('jornada') && txt.includes('entrada')) {
-                    possuiColunaJornada = true;
-                }
-            });
+    let possuiColunaJornada = false;
+    paginas.forEach(p => {
+        const linhas = p.linhas || [];
+        linhas.forEach(l => {
+            const txt = l.toLowerCase();
+            if (txt.includes('jornada') && txt.includes('entrada')) {
+                possuiColunaJornada = true;
+            }
         });
+    });
 
-        paginas.forEach(pagina => {
-            const pageObj = { page: pagina.page, days: [] };
-            const linhas = pagina.linhas || [];
+    paginas.forEach(pagina => {
+        const pageObj = { page: pagina.page, days: [] };
+        const linhas = pagina.linhas || [];
 
-            let ultimoDiaEncontrado = null; 
+        let ultimoDiaEncontrado = null; 
 
-            linhas.forEach(linha => {
-                const linhaTrim = linha.trim();
-                const lower = linhaTrim.toLowerCase();
+        linhas.forEach(linha => {
+            const linhaTrim = linha.trim();
+            const lower = linhaTrim.toLowerCase();
 
-                // 1. IGNORA LINHAS DE CABEÇALHO E METADADOS DO DOCUMENTO
-                if (
-                    lower.includes('cartão de ponto') ||
-                    lower.includes('emissão:') ||
-                    lower.includes('seção:') ||
-                    lower.includes('período:') ||
-                    lower.includes('chapa') ||
-                    lower.includes('carteira de trabalho') ||
-                    lower.includes('função') ||
-                    lower.includes('cargo') ||
-                    lower.includes('quantidade de horas') ||
-                    lower.includes('ent') ||
-                    lower.includes('sai') ||
-                    lower.includes('h.ext') ||
-                    lower.includes('atraso') ||
-                    lower.includes('falta') ||
-                    lower.includes('ad.not') ||
-                    lower.includes('abono jornada') ||
-                    lower.includes('total de horas') ||
-                    lower.includes('folgas geradas') ||
-                    lower.includes('código nome jornada') ||
-                    lower.includes('impresso por') ||
-                    lower.includes('pje documento assinado') ||
-                    lower.includes('(*) horas não trabalhadas') ||
-                    /^\s*[-–]\s*operador/.test(lower)
-                ) {
-                    return;
-                }
+            if (
+                lower.includes('cartão de ponto') ||
+                lower.includes('emissão:') ||
+                lower.includes('seção:') ||
+                lower.includes('período:') ||
+                lower.includes('chapa') ||
+                lower.includes('carteira de trabalho') ||
+                lower.includes('função') ||
+                lower.includes('cargo') ||
+                lower.includes('quantidade de horas') ||
+                lower.includes('ent') ||
+                lower.includes('sai') ||
+                lower.includes('h.ext') ||
+                lower.includes('atraso') ||
+                lower.includes('falta') ||
+                lower.includes('ad.not') ||
+                lower.includes('abono jornada') ||
+                lower.includes('total de horas') ||
+                lower.includes('folgas geradas') ||
+                lower.includes('código nome jornada') ||
+                lower.includes('impresso por') ||
+                lower.includes('pje documento assinado') ||
+                lower.includes('(*) horas não trabalhadas') ||
+                /^\s*[-–]\s*operador/.test(lower)
+            ) {
+                return;
+            }
 
-                if (/^\s*\d{1,2}\s*[\/\-\.]\s*\d{2,4}\s*$/.test(linhaTrim)) {
-                    return;
-                }
+            if (/^\s*\d{1,2}\s*[\/\-\.]\s*\d{2,4}\s*$/.test(linhaTrim)) {
+                return;
+            }
 
-                // 2. TRATAMENTO INTELIGENTE DE SEPARADOR
-                let zonaDados = linhaTrim;
-                if (linhaTrim.includes('|')) {
-                    zonaDados = linhaTrim.split('|')[0];
-                }
+            let zonaDados = linhaTrim;
+            if (linhaTrim.includes('|')) {
+                zonaDados = linhaTrim.split('|')[0];
+            }
 
-                // 3. EXTRAÇÃO DE DATA BLINDADA
-                let date_raw = null;
-                const regexSemana = /(?:\s*[-–|]?\s*(?:DOM|SEG|TER|QUA|QUI|SEX|SAB|DOMINGO|SEGUNDA|TERCA|TERÇA|QUARTA|QUINTA|SEXTA|SABADO|SÁBADO))?/i;
+            let date_raw = null;
+            const regexSemana = /(?:\s*[-–|]?\s*(?:DOM|SEG|TER|QUA|QUI|SEX|SAB|DOMINGO|SEGUNDA|TERCA|TERÇA|QUARTA|QUINTA|SEXTA|SABADO|SÁBADO))?/i;
 
-                const matchFull = zonaDados.match(new RegExp(`\\b(0?[1-9]|[12][0-9]|3[01])[\\/\\-\\.](0?[1-9]|1[0-2])[\\/\\-\\.](\\d{4})` + regexSemana.source + `\\b`, 'i'));
-                const matchWk = zonaDados.match(/\b(0?[1-9]|[12][0-9]|3[01])\s*[-–|]?\s*(DOM|SEG|TER|QUA|QUI|SEX|SAB|DOMINGO|SEGUNDA|TERCA|TERÇA|QUARTA|QUINTA|SEXTA|SABADO|SÁBADO)\b/i);
-                const matchShort = zonaDados.match(new RegExp(`\\b(0?[1-9]|[12][0-9]|3[01])\\/(0?[1-9]|1[0-2])\\b(?!\\d)` + regexSemana.source, 'i'));
+            const matchFull = zonaDados.match(new RegExp(`\\b(0?[1-9]|[12][0-9]|3[01])[\\/\\-\\.](0?[1-9]|1[0-2])[\\/\\-\\.](\\d{4})` + regexSemana.source + `\\b`, 'i'));
+            const matchWk = zonaDados.match(/\b(0?[1-9]|[12][0-9]|3[01])\s*[-–|]?\s*(DOM|SEG|TER|QUA|QUI|SEX|SAB|DOMINGO|SEGUNDA|TERCA|TERÇA|QUARTA|QUINTA|SEXTA|SABADO|SÁBADO)\b/i);
+            const matchShort = zonaDados.match(new RegExp(`\\b(0?[1-9]|[12][0-9]|3[01])\\/(0?[1-9]|1[0-2])\\b(?!\\d)` + regexSemana.source, 'i'));
 
-                if (matchFull) {
-                    date_raw = matchFull[0];
-                } else if (matchWk) {
-                    date_raw = matchWk[0]; 
-                } else if (matchShort) {
-                    date_raw = matchShort[0];
-                }
+            if (matchFull) {
+                date_raw = matchFull[0];
+            } else if (matchWk) {
+                date_raw = matchWk[0]; 
+            } else if (matchShort) {
+                date_raw = matchShort[0];
+            }
 
-                let zonaHorarios = zonaDados;
-                if (date_raw) {
-                    zonaHorarios = zonaHorarios.replace(date_raw, '');
-                }
+            let zonaHorarios = zonaDados;
+            if (date_raw) {
+                zonaHorarios = zonaHorarios.replace(date_raw, '');
+            }
 
-                // Se o dia for feriado, descanso ou sem registro, zera os horários para evitar falsos positivos
-                let horasMatch = [];
-                if (
-                    !lower.includes('feriado') &&
-                    !lower.includes('descanso semanal') &&
-                    !lower.includes('sem registro de ponto') &&
-                    !lower.includes('natal') &&
-                    !lower.includes('confraternização') &&
-                    !lower.includes('abono')
-                ) {
-                    // 4. CAPTURA DE HORAS ROBUSTA (Suporta HH:MM com ou sem dois pontos, ex: 1815 ou 12:00)
-                    const regexHoras = /\b\+?([0-2][0-9])\s*[:;.,]?\s*([0-5][0-9])(?![0-9])/g;
-                    let match;
+            let horasMatch = [];
+            if (
+                !lower.includes('feriado') &&
+                !lower.includes('descanso semanal') &&
+                !lower.includes('sem registro de ponto') &&
+                !lower.includes('natal') &&
+                !lower.includes('confraternização') &&
+                !lower.includes('abono')
+            ) {
+                const regexHoras = /\b\+?([0-2][0-9])\s*[:;.,]?\s*([0-5][0-9])(?![0-9])/g;
+                let match;
+                
+                while ((match = regexHoras.exec(zonaHorarios)) !== null) {
+                    let h = match[1];
+                    let m = match[2];
                     
-                    while ((match = regexHoras.exec(zonaHorarios)) !== null) {
-                        let h = match[1];
-                        let m = match[2];
-                        
-                        const horaNum = parseInt(h, 10);
-                        const minutoNum = parseInt(m, 10);
+                    const horaNum = parseInt(h, 10);
+                    const minutoNum = parseInt(m, 10);
 
-                        if (horaNum >= 0 && horaNum <= 23 && minutoNum >= 0 && minutoNum <= 59) {
-                            horasMatch.push({
-                                kind: "",
-                                time_raw: match[0],
-                                time_hhmm: `${h}:${m}`
-                            });
-                        }
+                    if (horaNum >= 0 && horaNum <= 23 && minutoNum >= 0 && minutoNum <= 59) {
+                        horasMatch.push({
+                            kind: "",
+                            time_raw: match[0],
+                            time_hhmm: `${h}:${m}`
+                        });
                     }
                 }
+            }
 
-                let punchesAtuais = horasMatch.slice(0, 4);
+            let punchesAtuais = horasMatch.slice(0, 4);
 
-                if (possuiColunaJornada && date_raw && punchesAtuais.length > 0) {
-                    punchesAtuais = punchesAtuais.slice(1);
-                }
+            if (possuiColunaJornada && date_raw && punchesAtuais.length > 0) {
+                punchesAtuais = punchesAtuais.slice(1);
+            }
 
-                punchesAtuais.sort((a, b) => a.time_hhmm.localeCompare(b.time_hhmm));
+            punchesAtuais.sort((a, b) => a.time_hhmm.localeCompare(b.time_hhmm));
 
-                // 5. VÍNCULO DE DIAS E BATIDAS
-                if (date_raw) {
+            if (date_raw) {
+                ultimoDiaEncontrado = {
+                    date_raw: date_raw.trim(),
+                    punches: punchesAtuais
+                };
+                pageObj.days.push(ultimoDiaEncontrado);
+            } 
+            else if (punchesAtuais.length > 0) {
+                if (ultimoDiaEncontrado) {
+                    ultimoDiaEncontrado.punches.push(...punchesAtuais);
+                    ultimoDiaEncontrado.punches.sort((a, b) => a.time_hhmm.localeCompare(b.time_hhmm));
+                    ultimoDiaEncontrado.punches = ultimoDiaEncontrado.punches.slice(0, 4);
+                } else {
                     ultimoDiaEncontrado = {
-                        date_raw: date_raw.trim(),
+                        date_raw: "DESCONHECIDO",
                         punches: punchesAtuais
                     };
                     pageObj.days.push(ultimoDiaEncontrado);
-                } 
-                else if (punchesAtuais.length > 0) {
-                    if (ultimoDiaEncontrado) {
-                        ultimoDiaEncontrado.punches.push(...punchesAtuais);
-                        ultimoDiaEncontrado.punches.sort((a, b) => a.time_hhmm.localeCompare(b.time_hhmm));
-                        ultimoDiaEncontrado.punches = ultimoDiaEncontrado.punches.slice(0, 4);
-                    } else {
-                        ultimoDiaEncontrado = {
-                            date_raw: "DESCONHECIDO",
-                            punches: punchesAtuais
-                        };
-                        pageObj.days.push(ultimoDiaEncontrado);
-                    }
                 }
+            }
 
-                if (ultimoDiaEncontrado && ultimoDiaEncontrado.punches.length > 0) {
-                    ultimoDiaEncontrado.punches.forEach((p, index) => {
-                        p.kind = index % 2 === 0 ? "IN" : "OUT";
-                    });
-                }
-            });
-
-            resultado.pages.push(pageObj);
+            if (ultimoDiaEncontrado && ultimoDiaEncontrado.punches.length > 0) {
+                ultimoDiaEncontrado.punches.forEach((p, index) => {
+                    p.kind = index % 2 === 0 ? "IN" : "OUT";
+                });
+            }
         });
 
-        return resultado;
+        resultado.pages.push(pageObj);
+    });
+
+    return resultado;
+}
+
+// ==========================================
+// FUNÇÃO 2: HOLERITE
+// ==========================================
+function estruturarHolerite(paginas) {
+    const resultado = { pages: [] };
+
+    paginas.forEach(pagina => {
+        const linhas = pagina.linhas || [];
+        let currentMonth = "01";
+        let currentYear = "2020";
+
+        linhas.forEach(linha => {
+            const matchMes = linha.match(/Mês:\s*([a-zA-Z]{3})[\/\-](\d{2,4})/i);
+            if (matchMes) {
+                const mesStr = matchMes[1].toLowerCase();
+                const anoStr = matchMes[2].length === 2 ? "20" + matchMes[2] : matchMes[2];
+                currentYear = anoStr;
+
+                const mesesMap = {
+                    jan: "01", fev: "02", mar: "03", abr: "04", mai: "05", jun: "06",
+                    jul: "07", ago: "08", set: "09", out: "10", nov: "11", dez: "12"
+                };
+                if (mesesMap[mesStr]) {
+                    currentMonth = mesesMap[mesStr];
+                }
+            }
+        });
+
+        const pageObj = {
+            page: pagina.page,
+            year: currentYear,
+            month: currentMonth,
+            fields: [],
+            bases: []
+        };
+
+        linhas.forEach(linha => {
+            const regexVerba = /\b(\d{2,4})\s+([A-Za-zÀ-ÿ0-9\.\º\ª\s\-]+?)\s+(\d+[\.,]\d{2})\b/g;
+            let match;
+            while ((match = regexVerba.exec(linha)) !== null) {
+                pageObj.fields.push({
+                    code: match[1],
+                    label: match[2].trim(),
+                    reference: "",
+                    value: match[3]
+                });
+            }
+
+            if (linha.includes('BASEDECALCULODOINSS')) {
+                const valMatch = linha.match(/BASEDECALCULODOINSS\s*([\d\.,]+)/i);
+                if (valMatch) pageObj.bases.push({ label: "Base INSS", value: valMatch[1] });
+            }
+            if (linha.includes('SALARIOLIQUIDONOMES')) {
+                const valMatch = linha.match(/SALARIOLIQUIDONOMES\s*([\d\.,]+)/i);
+                if (valMatch) pageObj.bases.push({ label: "Valor Líquido", value: valMatch[1] });
+            }
+            if (linha.includes('TOT.RENDIMENTOS')) {
+                const valMatch = linha.match(/TOT\.RENDIMENTOS\s*([\d\.,]+)/i);
+                if (valMatch) pageObj.bases.push({ label: "Total Vencimentos", value: valMatch[1] });
+            }
+        });
+
+        resultado.pages.push(pageObj);
+    });
+
+    return resultado;
+}
+
+// ==========================================
+// FUNÇÃO PRINCIPAL DE ROTEAMENTO
+// ==========================================
+export function estruturarDados(paginas, tipo) {
+    if (tipo === 'ponto') {
+        return estruturarCartaoPonto(paginas);
+    }
+    
+    if (tipo === 'holerite') {
+        return estruturarHolerite(paginas);
     }
 
-    if (tipo === 'holerite') {
-        return { pages: [] }; 
-    }
+    return { pages: [] };
 }
