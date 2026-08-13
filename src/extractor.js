@@ -15,7 +15,7 @@ export async function extrairTextoPDF(filePath) {
         validPath = newPath;
     }
 
-    // 1. Tenta extração vetorial (padrão)
+    // 1. Tenta extração vetorial com LOG DE DEBUG
     try {
         const data = await pdfExtract.extract(validPath, {});
         let paginas = [];
@@ -53,6 +53,13 @@ export async function extrairTextoPDF(filePath) {
             }
 
             const numeroPagina = page?.pageInfo?.num || (index + 1);
+            
+            // --- LOG DE DEBUG DO VETORIAL ---
+            console.log(`\n================== [INÍCIO VETORIAL PÁGINA ${numeroPagina}] ==================`);
+            linhas.forEach(l => console.log(l));
+            console.log(`================== [FIM VETORIAL PÁGINA ${numeroPagina}] ==================\n`);
+            // --------------------------------
+
             paginas.push({ page: numeroPagina, linhas: linhas });
         });
 
@@ -65,7 +72,7 @@ export async function extrairTextoPDF(filePath) {
         console.log('⚠️ Extração vetorial falhou, convertendo PDF para imagem...');
     }
 
-    // 2. OCR Usando pdf-to-img + Tesseract com LOG em tempo real
+    // 2. OCR Usando pdf-to-img + Tesseract com LOG DE DEBUG EM TEMPO REAL
     console.log('⚠️ Executando OCR via pdf-to-img + Tesseract...');
     try {
         const document = await pdf(validPath, { scale: 2 });
@@ -75,9 +82,11 @@ export async function extrairTextoPDF(filePath) {
         for await (const imageBuffer of document) {
             const { data: { text } } = await tesseract.recognize(imageBuffer, 'por');
             
+            // --- LOG DE DEBUG DO TESSERACT OCR ---
             console.log(`\n================== [INÍCIO OCR PÁGINA ${pageCounter}] ==================`);
             console.log(text);
             console.log(`================== [FIM OCR PÁGINA ${pageCounter}] ==================\n`);
+            // ------------------------------------
 
             const linhasOCR = text.split('\n').filter(linha => linha.trim() !== '');
             
@@ -252,7 +261,7 @@ function estruturarCartaoPonto(paginas) {
 }
 
 // ==========================================
-// FUNÇÃO 2: HOLERITE
+// FUNÇÃO 2: HOLERITE (Refinada e Limpa)
 // ==========================================
 function estruturarHolerite(paginas) {
     const resultado = { pages: [] };
@@ -262,19 +271,27 @@ function estruturarHolerite(paginas) {
         let currentMonth = "01";
         let currentYear = "2020";
 
+        // Captura o mês e ano do cabeçalho
         linhas.forEach(linha => {
-            const matchMes = linha.match(/Mês:\s*([a-zA-Z]{3})[\/\-](\d{2,4})/i);
-            if (matchMes) {
-                const mesStr = matchMes[1].toLowerCase();
-                const anoStr = matchMes[2].length === 2 ? "20" + matchMes[2] : matchMes[2];
-                currentYear = anoStr;
+            const matchMesAno = linha.match(/Mês\/Ano:\s*(0?[1-9]|1[0-2])\/(\d{2,4})/i);
+            if (matchMesAno) {
+                currentMonth = matchMesAno[1].padStart(2, '0');
+                const anoStr = matchMesAno[2];
+                currentYear = anoStr.length === 2 ? "20" + anoStr : anoStr;
+            } else {
+                const matchMes = linha.match(/Mês:\s*([a-zA-Z]{3})[\/\-](\d{2,4})/i);
+                if (matchMes) {
+                    const mesStr = matchMes[1].toLowerCase();
+                    const anoStr = matchMes[2].length === 2 ? "20" + matchMes[2] : matchMes[2];
+                    currentYear = anoStr;
 
-                const mesesMap = {
-                    jan: "01", fev: "02", mar: "03", abr: "04", mai: "05", jun: "06",
-                    jul: "07", ago: "08", set: "09", out: "10", nov: "11", dez: "12"
-                };
-                if (mesesMap[mesStr]) {
-                    currentMonth = mesesMap[mesStr];
+                    const mesesMap = {
+                        jan: "01", fev: "02", mar: "03", abr: "04", mai: "05", jun: "06",
+                        jul: "07", ago: "08", set: "09", out: "10", nov: "11", dez: "12"
+                    };
+                    if (mesesMap[mesStr]) {
+                        currentMonth = mesesMap[mesStr];
+                    }
                 }
             }
         });
@@ -288,17 +305,59 @@ function estruturarHolerite(paginas) {
         };
 
         linhas.forEach(linha => {
-            const regexVerba = /\b(\d{2,4})\s+([A-Za-zÀ-ÿ0-9\.\º\ª\s\-]+?)\s+(\d+[\.,]\d{2})\b/g;
+            const linhaUpper = linha.toUpperCase();
+
+            // Filtra e ignora linhas de cabeçalho, rodapé, metadados e totais que não são verbas
+            if (
+                linhaUpper.includes('IMPRESSO POR') ||
+                linhaUpper.includes('DOCUMENTO ASSINADO') ||
+                linhaUpper.includes('FLS.:') ||
+                linhaUpper.includes('DECLARAÇÃO REMUNERAÇÃO') ||
+                linhaUpper.includes('MÊS/ANO:') ||
+                linhaUpper.includes('PROVENTOS BRUTO') ||
+                linhaUpper.includes('PROVENTOS LÍQUIDOS') ||
+                linhaUpper.includes('MARGEM') ||
+                linhaUpper.includes('CONSIGNAÇÃO') ||
+                linhaUpper.includes('PROVISÃO FGTS') ||
+                linhaUpper.includes('ADIANTAMENTO 13')
+            ) {
+                return;
+            }
+
+            let encontrou = false;
+
+            // 1. Padrão com 4 colunas (Código + Descrição + Base/Ref + Valor)
+            const regex4Col = /\b(\d{2,4})\s+([A-Za-zÀ-ÿ0-9\.\º\ª\s\-\/]+?)\s+([-\d\.,]+)\s+([-\d\.,]{4,})\b/g;
             let match;
-            while ((match = regexVerba.exec(linha)) !== null) {
+            while ((match = regex4Col.exec(linha)) !== null) {
+                encontrou = true;
                 pageObj.fields.push({
                     code: match[1],
                     label: match[2].trim(),
-                    reference: "",
-                    value: match[3]
+                    reference: match[3],
+                    value: match[4]
                 });
             }
 
+            // 2. Padrão com 3 colunas (Código + Descrição + Valor)
+            if (!encontrou) {
+                const regex3Col = /\b(\d{2,4})\s+([A-Za-zÀ-ÿ0-9\.\º\ª\s\-\/]+?)\s+([-\d\.,]{4,})\b/g;
+                while ((match = regex3Col.exec(linha)) !== null) {
+                    encontrou = true;
+                    // Evita capturar fragmentos isolados que não são verbas reais
+                    const labelStr = match[2].trim();
+                    if (labelStr.length > 1) {
+                        pageObj.fields.push({
+                            code: match[1],
+                            label: labelStr,
+                            reference: "",
+                            value: match[3]
+                        });
+                    }
+                }
+            }
+
+            // Captura de Bases de Cálculo e Totais informados no documento
             if (linha.includes('BASEDECALCULODOINSS')) {
                 const valMatch = linha.match(/BASEDECALCULODOINSS\s*([\d\.,]+)/i);
                 if (valMatch) pageObj.bases.push({ label: "Base INSS", value: valMatch[1] });
