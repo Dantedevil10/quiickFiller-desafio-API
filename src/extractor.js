@@ -14,9 +14,9 @@ export async function extrairTextoPDF(filePath) {
         let items = page.content || [];
         if (items.length === 0) return;
 
-        // Ordena por Y (altura) e X (largura)
+        // Tolerância aumentada para 8px para garantir que horários e datas na mesma "faixa" fiquem na mesma linha
         items.sort((a, b) => {
-            if (Math.abs(a.y - b.y) < 6) { // Tolerância de 6px na linha
+            if (Math.abs(a.y - b.y) < 8) { 
                 return a.x - b.x; 
             }
             return a.y - b.y;
@@ -29,7 +29,7 @@ export async function extrairTextoPDF(filePath) {
         items.forEach(item => {
             if (!item.str || item.str.trim() === '') return;
 
-            if (Math.abs(item.y - currentY) > 6) { 
+            if (Math.abs(item.y - currentY) > 8) { 
                 if (currentLine.length > 0) {
                     linhas.push(currentLine.join(' '));
                 }
@@ -69,51 +69,75 @@ export function estruturarDados(paginas, tipo) {
     if (tipo === 'ponto') {
         const resultado = { pages: [] };
 
-        // Regex ultra flexível para pegar qualquer formato de data ou dia da semana
-        const regexData = /\b(\d{1,2}\s*[\/\-\.]\s*\d{1,2}(?:\s*[\/\-\.]\s*\d{2,4})?|\d{1,2}\s*[-–\s]?\s*(?:DOM|SEG|TER|QUA|QUI|SEX|SAB|DOMINGO|SEGUNDA|TERCA|TERÇA|QUARTA|QUINTA|SEXTA|SABADO|SÁBADO))\b/i;
-
         paginas.forEach(pagina => {
             const pageObj = { page: pagina.page, days: [] };
             const linhas = pagina.linhas || [];
 
-            console.log(`\n--- 📄 ANALISANDO PÁGINA ${pagina.page} (${linhas.length} linhas encontradas) ---`);
+            let ultimoDiaEncontrado = null; // Memória para caso os horários caiam na linha de baixo
 
             linhas.forEach(linha => {
-                // Junta fragmentos que o PDF picotou com espaço extra (ex: "08 : 25" vira "08:25")
+                // Junta fragmentos que o PDF picotou (ex: "08 : 25" vira "08:25")
                 const linhaNormalizada = linha.replace(/(\d{1,2})\s*([:;.,])\s*(\d{2})/g, '$1:$3');
 
-                const dataMatch = linhaNormalizada.match(regexData);
+                // Ignora assinaturas digitais
+                if (linhaNormalizada.includes('6b8cdfa') || linhaNormalizada.toLowerCase().includes('assinado')) {
+                    return; 
+                }
+
+                // 1. EXTRAÇÃO DE DATA BLINDADA (Testa do mais completo para o mais simples)
+                let date_raw = null;
                 
-                if (dataMatch) {
-                    const date_raw = dataMatch[1].trim();
-
-                    // Descarta se for assinatura ou rodapé
-                    if (linhaNormalizada.includes('6b8cdfa') || linhaNormalizada.toLowerCase().includes('assinado')) {
-                        return; 
-                    }
-
-                    // Extrai horários no formato HH:MM (ou com erros de OCR)
-                    const horasMatch = linhaNormalizada.match(/\b([0-9a-zA-Z]{1,2}[:;.,][0-9a-zA-Z]{2})\b/g) || [];
-
-                    const punches = horasMatch.map((horaBruta, index) => {
-                        let limpo = horaBruta.replace(/[;.,]/g, ':').replace(/[^0-9:]/g, '?');
-                        
-                        if (limpo.length === 4 && limpo.includes(':')) {
-                            limpo = '0' + limpo;
+                // Tenta achar DD/MM/YYYY primeiro
+                const matchFull = linhaNormalizada.match(/(\d{1,2}\s*[\/\-\.]\s*\d{1,2}\s*[\/\-\.]\s*\d{2,4})/);
+                if (matchFull) {
+                    date_raw = matchFull[1].trim(); 
+                } else {
+                    // Tenta achar DD/MM
+                    const matchShort = linhaNormalizada.match(/(\d{1,2}\s*[\/\-\.]\s*\d{1,2})/);
+                    if (matchShort) {
+                        date_raw = matchShort[1].trim();
+                    } else {
+                        // Tenta achar Dia e Semana (ex: 12 SEG)
+                        const matchWk = linhaNormalizada.match(/(\d{1,2}\s*[-–\s]?\s*(?:DOM|SEG|TER|QUA|QUI|SEX|SAB|DOMINGO|SEGUNDA|TERCA|TERÇA|QUARTA|QUINTA|SEXTA|SABADO|SÁBADO))/i);
+                        if (matchWk) {
+                            date_raw = matchWk[1].trim();
                         }
+                    }
+                }
 
-                        return {
-                            kind: index % 2 === 0 ? "IN" : "OUT",
-                            time_raw: horaBruta,
-                            time_hhmm: limpo
-                        };
-                    });
+                // 2. EXTRAÇÃO DOS HORÁRIOS
+                const horasMatch = linhaNormalizada.match(/\b([0-9a-zA-Z]{1,2}[:;.,][0-9a-zA-Z]{2})\b/g) || [];
+                const punchesAtuais = horasMatch.map((horaBruta) => {
+                    let limpo = horaBruta.replace(/[;.,]/g, ':').replace(/[^0-9:]/g, '?');
+                    if (limpo.length === 4 && limpo.includes(':')) {
+                        limpo = '0' + limpo;
+                    }
+                    return {
+                        kind: "", // O Kind será calculado no próximo passo para nunca errar a ordem
+                        time_raw: horaBruta,
+                        time_hhmm: limpo
+                    };
+                });
 
-                    console.log(`  🟢 Dia Encontrado: "${date_raw}" | Batidas:`, punches.map(p => p.time_hhmm));
-
-                    pageObj.days.push({
+                // 3. VÍNCULO DATA <-> HORÁRIO
+                if (date_raw) {
+                    // É uma linha nova com data! Cria o dia no array.
+                    ultimoDiaEncontrado = {
                         date_raw: date_raw,
-                        punches: punches
+                        punches: punchesAtuais
+                    };
+                    pageObj.days.push(ultimoDiaEncontrado);
+                } 
+                else if (punchesAtuais.length > 0 && ultimoDiaEncontrado) {
+                    // A linha NÃO tem data, mas tem horários. 
+                    // Isso significa que o PDF separou as horas na linha de baixo. Adiciona ao dia anterior!
+                    ultimoDiaEncontrado.punches.push(...punchesAtuais);
+                }
+
+                // 4. GARANTIA DO IN / OUT (Calculado com base no tamanho final do array do dia)
+                if (ultimoDiaEncontrado) {
+                    ultimoDiaEncontrado.punches.forEach((p, index) => {
+                        p.kind = index % 2 === 0 ? "IN" : "OUT";
                     });
                 }
             });
