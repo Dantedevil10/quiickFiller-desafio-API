@@ -1,16 +1,31 @@
 // src/server.js
+
 import express from 'express';
 import multer from 'multer';
 import cors from 'cors';
 import { pdfQueue } from './queue.js';
 import ExcelJS from 'exceljs';
 
+import path from 'path';
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'uploads/');
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, uniqueSuffix + path.extname(file.originalname)); // Salva com .pdf no final!
+    }
+});
+
+const upload = multer({ storage: storage });
+
 // Configura o Multer para salvar o PDF temporariamente na pasta 'uploads/'
-const upload = multer({ dest: 'uploads/' });
+//const upload = multer({ dest: 'uploads/' });
 
 // Rota 1: Recebe o PDF e coloca na fila
 app.post('/api/upload', upload.single('documento'), async (req, res) => {
