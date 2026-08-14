@@ -16,7 +16,20 @@ const storage = multer.diskStorage({
         cb(null, Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname));
     }
 });
-const upload = multer({ storage: storage });
+// Validação rígida exigida pela especificação
+const upload = multer({ 
+    storage: storage,
+    limits: { 
+        fileSize: 10 * 1024 * 1024 // Limite de 10MB
+    },
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype === 'application/pdf') {
+            cb(null, true);
+        } else {
+            cb(new Error('Apenas arquivos PDF são permitidos.'));
+        }
+    }
+});
 
 // ==========================================
 // ROTA 1: HEALTHCHECK (Exigência do contrato)
