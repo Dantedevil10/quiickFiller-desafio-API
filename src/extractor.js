@@ -340,9 +340,6 @@ function parseHoleriteNormal(paginas) {
             }
         });
 
-        if (pageObj.fields.length > 0 || pageObj.bases.length > 0) {
-            resultado.pages.push(pageObj);
-        }
     });
 
     return resultado;
