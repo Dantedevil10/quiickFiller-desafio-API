@@ -77,37 +77,100 @@ app.post('/api/gerar-excel', async (req, res) => {
 
     try {
         const workbook = new ExcelJS.Workbook();
-        const worksheet = workbook.addWorksheet('Extracao_Ponto');
 
-        // Configura as colunas
-        worksheet.columns = [
-            { header: 'Página', key: 'page', width: 10 },
-            { header: 'Data', key: 'data', width: 15 },
-            { header: 'Tipo', key: 'kind', width: 15 },
-            { header: 'Horário Bruto', key: 'raw', width: 15 },
-            { header: 'Horário Corrigido (Final)', key: 'final', width: 25 }
-        ];
+        // ==========================================
+        // LÓGICA PARA CARTÃO DE PONTO
+        // ==========================================
+        if (tipo === 'ponto') {
+            const worksheet = workbook.addWorksheet('Extracao_Ponto');
 
-        worksheet.getRow(1).font = { bold: true };
+            // Configura as colunas
+            worksheet.columns = [
+                { header: 'Página', key: 'page', width: 10 },
+                { header: 'Data', key: 'data', width: 15 },
+                { header: 'Tipo', key: 'kind', width: 15 },
+                { header: 'Horário Bruto', key: 'raw', width: 15 },
+                { header: 'Horário Corrigido (Final)', key: 'final', width: 25 }
+            ];
 
-        // Desestrutura o JSON complexo para montar as linhas
-        dadosEditados.pages.forEach(p => {
-            p.days.forEach(d => {
-                if (d.punches.length === 0) {
-                    worksheet.addRow({ page: p.page, data: d.date_raw, kind: 'Sem Registro', raw: '-', final: '-' });
-                } else {
-                    d.punches.forEach(punch => {
-                        worksheet.addRow({
-                            page: p.page,
-                            data: d.date_raw,
-                            kind: punch.kind === 'IN' ? 'Entrada' : 'Saída',
-                            raw: punch.time_raw,
-                            final: punch.time_hhmm // Valor editado pelo usuário!
-                        });
+            worksheet.getRow(1).font = { bold: true };
+
+            // Desestrutura o JSON complexo para montar as linhas
+            dadosEditados.pages.forEach(p => {
+                if (p.days) {
+                    p.days.forEach(d => {
+                        if (!d.punches || d.punches.length === 0) {
+                            worksheet.addRow({ page: p.page, data: d.date_raw, kind: 'Sem Registro', raw: '-', final: '-' });
+                        } else {
+                            d.punches.forEach(punch => {
+                                worksheet.addRow({
+                                    page: p.page,
+                                    data: d.date_raw,
+                                    kind: punch.kind === 'IN' ? 'Entrada' : 'Saída',
+                                    raw: punch.time_raw,
+                                    final: punch.time_hhmm // Valor editado pelo usuário!
+                                });
+                            });
+                        }
                     });
                 }
             });
-        });
+        } 
+        // ==========================================
+        // LÓGICA PARA HOLERITE / FICHA FINANCEIRA
+        // ==========================================
+        else if (tipo === 'holerite') {
+            const worksheet = workbook.addWorksheet('Extracao_Holerite');
+
+            // Configura as colunas
+            worksheet.columns = [
+                { header: 'Competência', key: 'comp', width: 15 },
+                { header: 'Código', key: 'code', width: 10 },
+                { header: 'Descrição', key: 'label', width: 40 },
+                { header: 'Referência', key: 'ref', width: 15 },
+                { header: 'Valor (R$)', key: 'val', width: 15 }
+            ];
+
+            worksheet.getRow(1).font = { bold: true };
+
+            dadosEditados.pages.forEach(p => {
+                const competencia = `${p.month || '--'}/${p.year || '----'}`;
+
+                // 1. Lança as Verbas
+                if (p.fields) {
+                    p.fields.forEach(f => {
+                        worksheet.addRow({
+                            comp: competencia,
+                            code: f.code,
+                            label: f.label,
+                            ref: f.reference,
+                            val: f.value
+                        });
+                    });
+                }
+
+                // 2. Lança as Bases e Totais logo abaixo das verbas
+                if (p.bases && p.bases.length > 0) {
+                    // Adiciona uma linha em branco para separar visualmente
+                    worksheet.addRow({}); 
+                    
+                    p.bases.forEach(b => {
+                        const row = worksheet.addRow({
+                            comp: competencia,
+                            code: '-',
+                            label: b.label,
+                            ref: '-',
+                            val: b.value
+                        });
+                        // Destaca a linha de Base/Total em Negrito
+                        row.font = { bold: true };
+                    });
+
+                    // Adiciona mais uma linha em branco para separar meses/páginas diferentes
+                    worksheet.addRow({});
+                }
+            });
+        }
 
         // Retorna o arquivo como um stream binário para download
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
