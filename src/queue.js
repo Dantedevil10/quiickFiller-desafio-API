@@ -1,14 +1,12 @@
 // src/queue.js
 import { Queue } from 'bullmq';
-import IORedis from 'ioredis';
-//const {IORedis} = ioRedis
+import Redis from 'ioredis';
 
-// Conecta ao Redis (por padrão, tenta conectar no localhost:6379)
-export const connection = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
+// Cria a conexão com o Redis e exporta para o resto do app usar
+export const redis = new Redis({
     maxRetriesPerRequest: null
 });
 
-// Cria a fila chamada 'pdf-extraction'
-export const pdfQueue = new Queue('pdf-extraction', { connection });
-
-//module.exports = { pdfQueue, connection };
+export const pdfQueue = new Queue('pdf-extraction', { 
+    connection: redis 
+});
