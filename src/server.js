@@ -66,122 +66,178 @@ app.get('/api/status/:jobId', async (req, res) => {
     res.json({ state, result });
 });
 
-// NOVA ROTA: Recebe o JSON complexo e gera o Excel
-app.post('/api/gerar-excel', async (req, res) => {
-    const dadosEditados = req.body.dados;
-    const tipo = req.body.tipo;
+// NOVA ROTA: Recebe o JSON complexo e exporta para XLSX, CSV ou JSON
+app.post('/api/exportar', async (req, res) => {
+    const { dados: dadosEditados, tipo, formato = 'xlsx' } = req.body;
 
     if (!dadosEditados || !dadosEditados.pages) {
         return res.status(400).json({ erro: 'Dados inválidos enviados.' });
     }
 
     try {
+        // ========================================================
+        // EXPORTAÇÃO DIRETA EM JSON
+        // ========================================================
+        if (formato === 'json') {
+            res.setHeader('Content-Type', 'application/json');
+            res.setHeader('Content-Disposition', `attachment; filename=extracao_${tipo}_${Date.now()}.json`);
+            return res.send(JSON.stringify(dadosEditados, null, 2));
+        }
+
+        // ========================================================
+        // LÓGICA DE PLANILHAS (XLSX E CSV)
+        // ========================================================
         const workbook = new ExcelJS.Workbook();
 
-        // ==========================================
-        // LÓGICA PARA CARTÃO DE PONTO
-        // ==========================================
-        if (tipo === 'ponto') {
-            const worksheet = workbook.addWorksheet('Extracao_Ponto');
+        const styleHeader = (row) => {
+            row.eachCell({ includeEmpty: true }, cell => {
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF173772' } };
+                cell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
+                cell.alignment = { vertical: 'middle', horizontal: 'center' };
+            });
+        };
 
-            // Configura as colunas
-            worksheet.columns = [
-                { header: 'Página', key: 'page', width: 10 },
-                { header: 'Data', key: 'data', width: 15 },
-                { header: 'Tipo', key: 'kind', width: 15 },
-                { header: 'Horário Bruto', key: 'raw', width: 15 },
-                { header: 'Horário Corrigido (Final)', key: 'final', width: 25 }
-            ];
-
-            worksheet.getRow(1).font = { bold: true };
-
-            // Desestrutura o JSON complexo para montar as linhas
-            dadosEditados.pages.forEach(p => {
-                if (p.days) {
-                    p.days.forEach(d => {
-                        if (!d.punches || d.punches.length === 0) {
-                            worksheet.addRow({ page: p.page, data: d.date_raw, kind: 'Sem Registro', raw: '-', final: '-' });
-                        } else {
-                            d.punches.forEach(punch => {
-                                worksheet.addRow({
-                                    page: p.page,
-                                    data: d.date_raw,
-                                    kind: punch.kind === 'IN' ? 'Entrada' : 'Saída',
-                                    raw: punch.time_raw,
-                                    final: punch.time_hhmm // Valor editado pelo usuário!
-                                });
-                            });
-                        }
-                    });
+        const applyRowStyle = (row, bgColorHex, applyLeftBorder) => {
+            row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColorHex } };
+                if (applyLeftBorder && colNumber === 1) {
+                    cell.border = { left: { style: 'thick', color: { argb: 'FFDC3545' } } };
                 }
             });
-        } 
-        // ==========================================
-        // LÓGICA PARA HOLERITE / FICHA FINANCEIRA
-        // ==========================================
-        else if (tipo === 'holerite') {
-            const worksheet = workbook.addWorksheet('Extracao_Holerite');
+        };
 
-            // Configura as colunas
-            worksheet.columns = [
-                { header: 'Competência', key: 'comp', width: 15 },
-                { header: 'Código', key: 'code', width: 10 },
-                { header: 'Descrição', key: 'label', width: 40 },
-                { header: 'Referência', key: 'ref', width: 15 },
-                { header: 'Valor (R$)', key: 'val', width: 15 }
-            ];
+        if (tipo === 'ponto') {
+            const worksheet = workbook.addWorksheet('Cartão de Ponto');
 
-            worksheet.getRow(1).font = { bold: true };
+            let maxPunches = 0;
+            dadosEditados.pages.forEach(p => p.days?.forEach(d => {
+                if (d.punches?.length > maxPunches) maxPunches = d.punches.length;
+            }));
+
+            if (maxPunches < 4) maxPunches = 4;
+
+            const columns = [{ header: 'Data', key: 'data', width: 18 }];
+            for (let i = 0; i < maxPunches; i++) {
+                const tipoBatida = i % 2 === 0 ? 'Entrada' : 'Saída';
+                const numeroVez = Math.floor(i / 2) + 1;
+                columns.push({ header: `${tipoBatida} ${numeroVez}`, key: `p${i}`, width: 12 });
+            }
+            worksheet.columns = columns;
+            styleHeader(worksheet.getRow(1));
+
+            let prevDayNum = null;
 
             dadosEditados.pages.forEach(p => {
-                const competencia = `${p.month || '--'}/${p.year || '----'}`;
+                p.days?.forEach(d => {
+                    let hasQuestionMark = (d.date_raw || '').includes('?');
+                    let rowData = { data: d.date_raw || '-' };
+                    let punches = d.punches || [];
 
-                // 1. Lança as Verbas
-                if (p.fields) {
-                    p.fields.forEach(f => {
-                        worksheet.addRow({
-                            comp: competencia,
-                            code: f.code,
-                            label: f.label,
-                            ref: f.reference,
-                            val: f.value
-                        });
+                    punches.forEach((punch, index) => {
+                        rowData[`p${index}`] = punch.time_hhmm;
+                        if (punch.time_hhmm.includes('?')) hasQuestionMark = true;
                     });
-                }
 
-                // 2. Lança as Bases e Totais logo abaixo das verbas
-                if (p.bases && p.bases.length > 0) {
-                    // Adiciona uma linha em branco para separar visualmente
-                    worksheet.addRow({}); 
+                    const row = worksheet.addRow(rowData);
+
+                    const isOdd = punches.length % 2 !== 0;
+                    const isEmpty = punches.length === 0;
                     
-                    p.bases.forEach(b => {
-                        const row = worksheet.addRow({
-                            comp: competencia,
-                            code: '-',
-                            label: b.label,
-                            ref: '-',
-                            val: b.value
-                        });
-                        // Destaca a linha de Base/Total em Negrito
-                        row.font = { bold: true };
-                    });
+                    let isNonSeq = false;
+                    const currDayMatch = d.date_raw.match(/^\s*(\d{1,2})\b/);
+                    if (currDayMatch) {
+                        const currDayNum = parseInt(currDayMatch[1], 10);
+                        if (prevDayNum !== null) {
+                            if (currDayNum !== prevDayNum + 1 && !(prevDayNum >= 28 && currDayNum === 1)) {
+                                isNonSeq = true;
+                            }
+                        }
+                        prevDayNum = currDayNum;
+                    }
 
-                    // Adiciona mais uma linha em branco para separar meses/páginas diferentes
-                    worksheet.addRow({});
+                    if (isNonSeq) applyRowStyle(row, 'FFF8D7DA', true);
+                    else if (isOdd || isEmpty || hasQuestionMark) applyRowStyle(row, 'FFFFF3CD', false);
+                    
+                    row.eachCell((cell, colNumber) => { if(colNumber > 1) cell.alignment = { horizontal: 'center' }; });
+                });
+            });
+        } 
+        else if (tipo === 'holerite') {
+            const worksheet = workbook.addWorksheet('Holerites');
+
+            const colunasVerbas = new Set();
+            dadosEditados.pages.forEach(p => {
+                p.fields?.forEach(f => colunasVerbas.add(f.label));
+                p.bases?.forEach(b => colunasVerbas.add(b.label));
+            });
+
+            const columns = [
+                { header: 'Pág.', key: 'page', width: 8 },
+                { header: 'Mês', key: 'month', width: 8 },
+                { header: 'Ano', key: 'year', width: 8 }
+            ];
+            colunasVerbas.forEach(verba => columns.push({ header: verba, key: verba, width: 18 }));
+            worksheet.columns = columns;
+            styleHeader(worksheet.getRow(1));
+
+            let prevMonthNum = null;
+
+            dadosEditados.pages.forEach(p => {
+                let hasQuestionMark = (p.month || '').includes('?') || (p.year || '').includes('?');
+                let rowData = { page: p.page, month: p.month, year: p.year };
+                let fieldsCount = 0;
+
+                p.fields?.forEach(f => {
+                    rowData[f.label] = f.value;
+                    if ((f.value || '').includes('?')) hasQuestionMark = true;
+                    fieldsCount++;
+                });
+                p.bases?.forEach(b => {
+                    rowData[b.label] = b.value;
+                    if ((b.value || '').includes('?')) hasQuestionMark = true;
+                    fieldsCount++;
+                });
+
+                const row = worksheet.addRow(rowData);
+
+                const isEmpty = fieldsCount === 0;
+
+                let isNonSeq = false;
+                const currMonthNum = parseInt(p.month, 10);
+                if (!isNaN(currMonthNum)) {
+                    if (prevMonthNum !== null) {
+                        if (currMonthNum !== prevMonthNum + 1 && !(prevMonthNum === 12 && currMonthNum === 1)) {
+                            isNonSeq = true;
+                        }
+                    }
+                    prevMonthNum = currMonthNum;
                 }
+
+                if (isNonSeq) applyRowStyle(row, 'FFF8D7DA', true);
+                else if (isEmpty || hasQuestionMark) applyRowStyle(row, 'FFFFF3CD', false);
             });
         }
 
-        // Retorna o arquivo como um stream binário para download
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename=extracao_${tipo}.xlsx`);
+        // ========================================================
+        // RETORNO DO ARQUIVO PARA DOWNLOAD (XLSX ou CSV)
+        // ========================================================
+        const filenameTag = `extracao_${tipo}_${Date.now()}`;
 
-        await workbook.xlsx.write(res);
+        if (formato === 'csv') {
+            res.setHeader('Content-Type', 'text/csv');
+            res.setHeader('Content-Disposition', `attachment; filename=${filenameTag}.csv`);
+            await workbook.csv.write(res);
+        } else {
+            // Default: xlsx
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename=${filenameTag}.xlsx`);
+            await workbook.xlsx.write(res);
+        }
         res.end();
 
     } catch (error) {
-        console.error('Erro ao gerar Excel:', error);
-        res.status(500).json({ erro: 'Falha ao gerar a planilha.' });
+        console.error(`Erro ao exportar ${formato}:`, error);
+        res.status(500).json({ erro: 'Falha ao exportar os dados.' });
     }
 });
 
