@@ -7,7 +7,7 @@ import fs from 'fs';
 
 const pdfExtract = new PDFExtract();
 
-export async function extrairTextoPDF(filePath) {
+export async function extrairTextoPDF(filePath, job) {
     let validPath = filePath;
     if (!filePath.endsWith('.pdf') && fs.existsSync(filePath)) {
         const newPath = filePath + '.pdf';
@@ -15,12 +15,18 @@ export async function extrairTextoPDF(filePath) {
         validPath = newPath;
     }
 
+    // Aviso inicial
+    if (job) await job.updateProgress('Analisando estrutura do PDF...');
+
     // 1. Tenta extração vetorial...
     try {
         const data = await pdfExtract.extract(validPath, {});
         let paginas = [];
         
         (data.pages || []).forEach((page, index) => {
+            // Aviso Vetorial
+            if (job) job.updateProgress(`Extraindo texto nativo... Página ${index + 1}`);
+
             let items = page.content || [];
             if (items.length === 0) return;
 
@@ -71,12 +77,19 @@ export async function extrairTextoPDF(filePath) {
 
     // 2. OCR Usando pdf-to-img + Tesseract
     console.log('⚠️ Executando OCR via pdf-to-img + Tesseract...');
+
+    // Aviso alertando que foi para o modo demorado
+    if (job) await job.updateProgress('Iniciando leitura por imagem (OCR). Isso pode demorar...');
+
     try {
         const document = await pdf(validPath, { scale: 2 });
         let paginasOCR = [];
         let pageCounter = 1;
 
         for await (const imageBuffer of document) {
+            // AQUI É O PULO DO GATO: Avisa qual página o OCR está lendo agora!
+            if (job) await job.updateProgress(`Lendo página ${pageCounter} ...`);
+
             const { data: { text } } = await tesseract.recognize(imageBuffer, 'por');
             const linhasOCR = text.split('\n').filter(linha => linha.trim() !== '');
             
@@ -339,6 +352,8 @@ function parseHoleriteNormal(paginas) {
                 }
             }
         });
+
+        resultado.pages.push(pageObj);
 
     });
 

@@ -90,7 +90,8 @@ app.get('/api/transcricoes/:id', async (req, res) => {
         tipo: job.data.tipo,
         status: "processando",
         erro: null,
-        value: null
+        value: null,
+        mensagemProgresso: job.progress || "Aguardando na fila do servidor..."
     });
 });
 

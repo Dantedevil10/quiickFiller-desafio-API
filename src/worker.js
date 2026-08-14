@@ -7,7 +7,7 @@ const worker = new Worker('pdf-extraction', async job => {
     console.log(`👷 Iniciando transcrição ${job.id}`);
     
     try {
-        const textoBruto = await extrairTextoPDF(job.data.filePath);
+        const textoBruto = await extrairTextoPDF(job.data.filePath, job);
         
         // Mapeia para suportar 'cartao-ponto' (novo) ou 'ponto' (antigo) do seu extractor
         const tipoExtrator = job.data.tipo === 'cartao-ponto' ? 'ponto' : 'holerite';
