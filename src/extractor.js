@@ -87,7 +87,6 @@ export async function extrairTextoPDF(filePath, job) {
         let pageCounter = 1;
 
         for await (const imageBuffer of document) {
-            // AQUI É O PULO DO GATO: Avisa qual página o OCR está lendo agora!
             if (job) await job.updateProgress(`Lendo página ${pageCounter} ...`);
 
             const { data: { text } } = await tesseract.recognize(imageBuffer, 'por');
@@ -100,39 +99,29 @@ export async function extrairTextoPDF(filePath, job) {
             paginasOCR.push({ page: pageCounter++, linhas: linhasOCR });
         }
 
-        // =========================================================
-        // 🚨 VALIDAÇÃO DE QUALIDADE DO OCR (A TRAVA DE LIXO) 🚨
-        // =========================================================
         const textoTotal = paginasOCR.map(p => p.linhas.join(' ')).join(' ').toLowerCase();
-        
-        // Conta horários em formato minimamente aceitável (ex: 08:30, 14:00)
         const horáriosEncontrados = (textoTotal.match(/\b[0-2]?[0-9]:[0-5][0-9]\b/g) || []).length;
-        
-        // Conta palavras essenciais que todo holerite ou ponto deve ter (mesmo que com pequenos erros)
         const palavrasChave = ['entrada', 'saida', 'saída', 'quinzena', 'jornada', 'ponto', 'horas', 'extra', 'total', 'rep', 'semanal'];
         const qtdPalavrasEncontradas = palavrasChave.filter(palavra => textoTotal.includes(palavra)).length;
 
         console.log(`📊 [Qualidade OCR] Horários: ${horáriosEncontrados} | Palavras-chave: ${qtdPalavrasEncontradas}`);
 
-        // REGRA DE REJEIÇÃO: Se o Tesseract vomitou lixo, ele não acha horários formatados direito nem palavras legíveis.
-        // Se achou menos de 2 palavras-chave E menos de 5 horários limpos no documento INTEIRO:
         if (qtdPalavrasEncontradas < 2 && horáriosEncontrados < 5) {
             const erroIlegivel = new Error("O arquivo não pôde ser lido com clareza. A imagem está ilegível ou muito bagunçada.");
-            erroIlegivel.code = "OCR_ILEGIVEL"; // Passa um código para o backend saber exatamente qual foi o erro
+            erroIlegivel.code = "OCR_ILEGIVEL";
             throw erroIlegivel;
         }
-        // =========================================================
 
         if (validPath !== filePath && fs.existsSync(validPath)) fs.unlinkSync(validPath);
         return paginasOCR;
     } catch (ocrError) {
         if (validPath !== filePath && fs.existsSync(validPath)) fs.unlinkSync(validPath);
-        throw ocrError; // Repassa o erro de leitura estourado para o Job/Controller
+        throw ocrError;
     }
 }
 
 // ==========================================
-// FUNÇÃO 1: CARTÃO DE PONTO (MANTIDA INTACTA)
+// FUNÇÃO 1: CARTÃO DE PONTO (MELHORADO)
 // ==========================================
 function estruturarCartaoPonto(paginas) {
     const resultado = { pages: [] };
@@ -191,6 +180,10 @@ function estruturarCartaoPonto(paginas) {
             let zonaHorarios = zonaDados;
             if (date_raw) zonaHorarios = zonaHorarios.replace(date_raw, '');
 
+            // 💡 MELHORIA: Remove ocorrências e suas respectivas quantidades/horas da string de análise para não viciarem como batidas de ponto
+            const occurrenceRegex = /(HE-BCO DE HORAS|HE-REMUNERADA|HE COMPENSADA|ABN\/DEC\.CHEFIA|REG\. SUSPENSO|DESTACAMENTO).*$/i;
+            zonaHorarios = zonaHorarios.replace(occurrenceRegex, '');
+
             let horasMatch = [];
             if (!lower.includes('feriado') && !lower.includes('descanso semanal') && !lower.includes('sem registro de ponto') &&
                 !lower.includes('natal') && !lower.includes('confraternização') && !lower.includes('abono')) {
@@ -207,25 +200,43 @@ function estruturarCartaoPonto(paginas) {
                 }
             }
 
-            let punchesAtuais = horasMatch.slice(0, 4);
-            if (possuiColunaJornada && date_raw && punchesAtuais.length > 0) punchesAtuais = punchesAtuais.slice(1);
-            punchesAtuais.sort((a, b) => a.time_hhmm.localeCompare(b.time_hhmm));
+            let punchesAtuais = [...horasMatch];
+            if (possuiColunaJornada && date_raw && punchesAtuais.length > 0) {
+                punchesAtuais = punchesAtuais.slice(1); // Ignora a primeira coluna de horário (Jornada prevista)
+            }
 
             if (date_raw) {
-                ultimoDiaEncontrado = { date_raw: date_raw.trim(), punches: punchesAtuais };
-                pageObj.days.push(ultimoDiaEncontrado);
+                const dateKey = date_raw.trim();
+                let existingDay = pageObj.days.find(d => d.date_raw === dateKey);
+                if (existingDay) {
+                    ultimoDiaEncontrado = existingDay;
+                    if (punchesAtuais.length > 0) {
+                        ultimoDiaEncontrado.punches.push(...punchesAtuais);
+                    }
+                } else {
+                    ultimoDiaEncontrado = { date_raw: dateKey, punches: [...punchesAtuais] };
+                    pageObj.days.push(ultimoDiaEncontrado);
+                }
             } else if (punchesAtuais.length > 0) {
                 if (ultimoDiaEncontrado) {
                     ultimoDiaEncontrado.punches.push(...punchesAtuais);
-                    ultimoDiaEncontrado.punches.sort((a, b) => a.time_hhmm.localeCompare(b.time_hhmm));
-                    ultimoDiaEncontrado.punches = ultimoDiaEncontrado.punches.slice(0, 4);
                 } else {
-                    ultimoDiaEncontrado = { date_raw: "DESCONHECIDO", punches: punchesAtuais };
+                    ultimoDiaEncontrado = { date_raw: "DESCONHECIDO", punches: [...punchesAtuais] };
                     pageObj.days.push(ultimoDiaEncontrado);
                 }
             }
 
             if (ultimoDiaEncontrado && ultimoDiaEncontrado.punches.length > 0) {
+                const uniquePunches = [];
+                const seen = new Set();
+                ultimoDiaEncontrado.punches.forEach(p => {
+                    if (!seen.has(p.time_hhmm)) {
+                        seen.add(p.time_hhmm);
+                        uniquePunches.push(p);
+                    }
+                });
+                uniquePunches.sort((a, b) => a.time_hhmm.localeCompare(b.time_hhmm));
+                ultimoDiaEncontrado.punches = uniquePunches.slice(0, 4);
                 ultimoDiaEncontrado.punches.forEach((p, index) => p.kind = index % 2 === 0 ? "IN" : "OUT");
             }
         });
@@ -237,12 +248,11 @@ function estruturarCartaoPonto(paginas) {
 }
 
 // ==========================================
-// FUNÇÃO 2.1: HOLERITE PADRÃO E PJe (Restaurada e Blindada)
+// FUNÇÃO 2.1: HOLERITE PADRÃO E PJe
 // ==========================================
 function parseHoleriteNormal(paginas) {
     const resultado = { pages: [] };
 
-    // Função interna para bloquear rótulos inválidos de entrarem como verba
     function isInvalid(lbl, cod) {
         const l = lbl.toUpperCase().replace(/\s/g, '');
         const c = cod.toUpperCase();
@@ -257,7 +267,6 @@ function parseHoleriteNormal(paginas) {
         let currentMonth = "01";
         let currentYear = "2020";
 
-        // Captura Mês/Ano
         linhasBrutas.forEach(linha => {
             const linhaLimpa = linha.replace(/\s/g, '');
             const matchPeriodo = linhaLimpa.match(/Período[:]?(\d{2})\/(\d{4})/i);
@@ -288,18 +297,15 @@ function parseHoleriteNormal(paginas) {
             const linhaLimpaGeral = linha.replace(/\s/g, '');
             const upperGeral = linhaLimpaGeral.toUpperCase();
 
-            // Gatilho de início das verbas
             if (upperGeral.includes('COD.DESCRIÇÃO') || upperGeral.includes('VERBANOME') || upperGeral.includes('CÓD.DESCRIÇÃO')) {
                 capturandoVerbas = true;
                 return;
             }
 
-            // Gatilho de fim das verbas
             if (upperGeral.startsWith('TOTAL') || upperGeral.startsWith('LÍQÜIDO') || upperGeral.startsWith('LIQUIDO') || upperGeral.startsWith('BASE')) {
                 capturandoVerbas = false;
             }
 
-            // Captura Bases e Totais independentemente da linha de verbas
             if (upperGeral.includes('BASEI.N.S.S.')) {
                 const m = linhaLimpaGeral.match(/BaseI\.N\.S\.S\.[:]*([\d\.,]+)/i);
                 if (m) pageObj.bases.push({ label: "Base INSS", value: m[1] });
@@ -321,11 +327,8 @@ function parseHoleriteNormal(paginas) {
 
             let textLeft = linha.trim();
 
-            // Pula a linha do cabeçalho da tabela se ela escorregar pro bloco de verbas
             if (textLeft.toUpperCase().includes('DESCRIÇÃO') && textLeft.toUpperCase().includes('PROVENTOS')) return;
 
-            // Tenta achar 4 colunas (Código + Descrição + Ref + Valor)
-            // Agora o regex suporta códigos com letras/barras e descrições com % e ()
             const regex4Col = /(?:^|\s)([\/A-Za-z0-9]{1,5})\s+([A-Za-zÀ-ÿ0-9\.\º\ª\s\-\/\%\(\)\+]+?)\s+([-\d\.,]+)\s+([-\d\.,]{3,})(?=\s|$)/g;
             let achou = false;
             let match;
@@ -336,10 +339,9 @@ function parseHoleriteNormal(paginas) {
                     pageObj.fields.push({ code, label, reference: match[3], value: match[4] });
                     achou = true;
                 }
-                textLeft = textLeft.replace(match[0], ' '); // Remove a verba capturada da linha
+                textLeft = textLeft.replace(match[0], ' ');
             }
 
-            // Se não achou 4 colunas, tenta encontrar o formato de 3 colunas (Código + Descrição + Valor)
             if (!achou) {
                 const regex3Col = /(?:^|\s)([\/A-Za-z0-9]{1,5})\s+([A-Za-zÀ-ÿ0-9\.\º\ª\s\-\/\%\(\)\+]+?)\s+([-\d\.,]{3,})(?=\s|$)/g;
                 while ((match = regex3Col.exec(textLeft)) !== null) {
@@ -354,14 +356,13 @@ function parseHoleriteNormal(paginas) {
         });
 
         resultado.pages.push(pageObj);
-
     });
 
     return resultado;
 }
 
 // ==========================================
-// FUNÇÃO 2.2: FICHA FINANCEIRA (Multi-colunas / Multi-meses)
+// FUNÇÃO 2.2: FICHA FINANCEIRA
 // ==========================================
 function parseFichaFinanceira(paginas) {
     const resultado = { pages: [] };
@@ -373,15 +374,12 @@ function parseFichaFinanceira(paginas) {
         linhas.forEach(linha => {
             const linhaUpper = linha.toUpperCase();
 
-            // 1. Ignora linhas que geram lixo estrutural
             if (linhaUpper.includes('ASSINADO ELETRONICAMENTE') || linhaUpper.includes('DE JUNHO DE') || linhaUpper.includes('FLS.:')) {
                 return;
             }
 
-            // 2. Detecta quando o bloco de um mês começa (Ex: "Mês: abr-17")
             const matchMes = linhaUpper.match(/M[ÊE]S:\s*([A-Z]{3})[-/](\d{2,4})/);
             if (matchMes) {
-                // Salva o mês anterior antes de criar o novo
                 if (currentMonthObj && (currentMonthObj.fields.length > 0 || currentMonthObj.bases.length > 0)) {
                     resultado.pages.push(currentMonthObj);
                 }
@@ -406,7 +404,6 @@ function parseFichaFinanceira(paginas) {
 
             let textoParaVerbas = linha;
 
-            // 3. Captura Bases e Totais da Ficha (e limpa da string para não confundir com as verbas)
             const basesParaExtrair = [
                 { regex: /BASEDECALCULODOINSS\s*([\d\.,]+)/i, label: "Base INSS" },
                 { regex: /BASEDECALCULODOIRF\s*([\d\.,]+)/i, label: "Base IRRF" },
@@ -425,12 +422,10 @@ function parseFichaFinanceira(paginas) {
                 }
             });
 
-            // Limpa informações que parecem verbas numéricas mas não são
             textoParaVerbas = textoParaVerbas.replace(/VALORDOIRFARECOLHER\s*[\d\.,]+/gi, ' ');
             textoParaVerbas = textoParaVerbas.replace(/REMUNERAÇÃOMES\s*[\d\.,]+/gi, ' ');
             textoParaVerbas = textoParaVerbas.replace(/DIAS\/HORASTRAB\s*[\d\.,]+/gi, ' ');
 
-            // 4. Captura as Verbas agrupadas lado a lado (Código + Descrição + Referencia + Valor)
             const regexVerbas = /(?:^|\s)(\d{1,4}|\/[A-Z0-9]{1,3})\s+([A-Za-zÀ-ÿ0-9\.\º\ª\s\-\/\%]+?)\s+([-\d\.,]+)\s+([-\d\.,]{3,})\b/g;
             let matchV;
             while ((matchV = regexVerbas.exec(textoParaVerbas)) !== null) {
@@ -451,7 +446,6 @@ function parseFichaFinanceira(paginas) {
         });
     });
 
-    // Empurra o último bloco da Ficha Financeira capturado
     if (currentMonthObj && (currentMonthObj.fields.length > 0 || currentMonthObj.bases.length > 0)) {
         resultado.pages.push(currentMonthObj);
     }
@@ -460,17 +454,15 @@ function parseFichaFinanceira(paginas) {
 }
 
 // ==========================================
-// FUNÇÃO 2.0: ROTEADOR PRINCIPAL DO HOLERITE
+// ROTEADOR PRINCIPAL
 // ==========================================
 function estruturarHolerite(paginas) {
     let isFichaFinanceira = false;
 
-    // Checagem prévia rápida do layout do PDF
     for (let p of paginas) {
         const linhas = p.linhas || [];
         for (let l of linhas) {
             const upper = l.toUpperCase().replace(/\s/g, '');
-            // Se encontrar a estrutura de Ficha Financeira, aciona o trigger
             if (upper.includes('FICHAFINANCEIRA') || upper.includes('RENDIMENTOSDESCONTOSRESULTADOS')) {
                 isFichaFinanceira = true;
                 break;
@@ -488,9 +480,6 @@ function estruturarHolerite(paginas) {
     }
 }
 
-// ==========================================
-// FUNÇÃO PRINCIPAL DE ROTEAMENTO
-// ==========================================
 export function estruturarDados(paginas, tipo) {
     if (tipo === 'ponto') {
         return estruturarCartaoPonto(paginas);
