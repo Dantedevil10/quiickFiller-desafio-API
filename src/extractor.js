@@ -15,7 +15,7 @@ export async function extrairTextoPDF(filePath) {
         validPath = newPath;
     }
 
-    // 1. Tenta extração vetorial com cálculo de espaçamento inteligente (FIX PARA PJe)
+    // 1. Tenta extração vetorial...
     try {
         const data = await pdfExtract.extract(validPath, {});
         let paginas = [];
@@ -25,9 +25,7 @@ export async function extrairTextoPDF(filePath) {
             if (items.length === 0) return;
 
             items.sort((a, b) => {
-                if (Math.abs(a.y - b.y) < 8) { 
-                    return a.x - b.x; 
-                }
+                if (Math.abs(a.y - b.y) < 8) return a.x - b.x; 
                 return a.y - b.y;
             });
 
@@ -41,40 +39,24 @@ export async function extrairTextoPDF(filePath) {
                 if (!item.str || item.str.trim() === '') return;
 
                 if (Math.abs(item.y - currentY) > 8) { 
-                    // Quebra de linha
-                    if (currentLineStr.trim().length > 0) {
-                        linhas.push(currentLineStr.trim());
-                    }
+                    if (currentLineStr.trim().length > 0) linhas.push(currentLineStr.trim());
                     currentLineStr = item.str;
                     currentY = item.y;
                     lastX = item.x;
                     lastWidth = item.width || 0;
                 } else {
-                    // Mesma linha: calcula a distância visual para decidir se é espaço ou não
                     let gap = item.x - (lastX + lastWidth);
-                    
-                    if (gap > 12) {
-                        currentLineStr += "    " + item.str; // Gap grande = quebra de coluna
-                    } else if (gap > 2) {
-                        currentLineStr += " " + item.str;    // Gap médio = espaço entre palavras
-                    } else {
-                        currentLineStr += item.str;          // Gap zero/negativo = letras da mesma palavra (Fix PJe)
-                    }
+                    if (gap > 12) currentLineStr += "    " + item.str; 
+                    else if (gap > 2) currentLineStr += " " + item.str;    
+                    else currentLineStr += item.str;        
                     
                     lastX = item.x;
                     lastWidth = item.width || 0;
                 }
             });
-            if (currentLineStr.trim().length > 0) {
-                linhas.push(currentLineStr.trim());
-            }
+            if (currentLineStr.trim().length > 0) linhas.push(currentLineStr.trim());
 
             const numeroPagina = page?.pageInfo?.num || (index + 1);
-            
-            console.log(`\n================== [INÍCIO VETORIAL PÁGINA ${numeroPagina}] ==================`);
-            linhas.forEach(l => console.log(l));
-            console.log(`================== [FIM VETORIAL PÁGINA ${numeroPagina}] ==================\n`);
-
             paginas.push({ page: numeroPagina, linhas: linhas });
         });
 
@@ -96,25 +78,43 @@ export async function extrairTextoPDF(filePath) {
 
         for await (const imageBuffer of document) {
             const { data: { text } } = await tesseract.recognize(imageBuffer, 'por');
+            const linhasOCR = text.split('\n').filter(linha => linha.trim() !== '');
             
             console.log(`\n================== [INÍCIO OCR PÁGINA ${pageCounter}] ==================`);
             console.log(text);
             console.log(`================== [FIM OCR PÁGINA ${pageCounter}] ==================\n`);
 
-            const linhasOCR = text.split('\n').filter(linha => linha.trim() !== '');
-            
-            paginasOCR.push({
-                page: pageCounter++,
-                linhas: linhasOCR
-            });
+            paginasOCR.push({ page: pageCounter++, linhas: linhasOCR });
         }
+
+        // =========================================================
+        // 🚨 VALIDAÇÃO DE QUALIDADE DO OCR (A TRAVA DE LIXO) 🚨
+        // =========================================================
+        const textoTotal = paginasOCR.map(p => p.linhas.join(' ')).join(' ').toLowerCase();
+        
+        // Conta horários em formato minimamente aceitável (ex: 08:30, 14:00)
+        const horáriosEncontrados = (textoTotal.match(/\b[0-2]?[0-9]:[0-5][0-9]\b/g) || []).length;
+        
+        // Conta palavras essenciais que todo holerite ou ponto deve ter (mesmo que com pequenos erros)
+        const palavrasChave = ['entrada', 'saida', 'saída', 'quinzena', 'jornada', 'ponto', 'horas', 'extra', 'total', 'rep', 'semanal'];
+        const qtdPalavrasEncontradas = palavrasChave.filter(palavra => textoTotal.includes(palavra)).length;
+
+        console.log(`📊 [Qualidade OCR] Horários: ${horáriosEncontrados} | Palavras-chave: ${qtdPalavrasEncontradas}`);
+
+        // REGRA DE REJEIÇÃO: Se o Tesseract vomitou lixo, ele não acha horários formatados direito nem palavras legíveis.
+        // Se achou menos de 2 palavras-chave E menos de 5 horários limpos no documento INTEIRO:
+        if (qtdPalavrasEncontradas < 2 && horáriosEncontrados < 5) {
+            const erroIlegivel = new Error("O arquivo não pôde ser lido com clareza. A imagem está ilegível ou muito bagunçada.");
+            erroIlegivel.code = "OCR_ILEGIVEL"; // Passa um código para o backend saber exatamente qual foi o erro
+            throw erroIlegivel;
+        }
+        // =========================================================
 
         if (validPath !== filePath && fs.existsSync(validPath)) fs.unlinkSync(validPath);
         return paginasOCR;
     } catch (ocrError) {
         if (validPath !== filePath && fs.existsSync(validPath)) fs.unlinkSync(validPath);
-        console.error('Erro crítico no OCR com pdf-to-img:', ocrError);
-        throw ocrError;
+        throw ocrError; // Repassa o erro de leitura estourado para o Job/Controller
     }
 }
 

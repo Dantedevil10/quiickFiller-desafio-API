@@ -55,6 +55,12 @@ app.get('/api/status/:jobId', async (req, res) => {
     if (!job) return res.status(404).json({ erro: 'Job não encontrado' });
 
     const state = await job.getState();
+    
+    // AQUI ESTÁ A MÁGICA: Se o job falhou, devolvemos o motivo do erro para o front!
+    if (state === 'failed') {
+        return res.json({ state: 'failed', erro: job.failedReason });
+    }
+
     const result = job.returnvalue; // Aqui estará o JSON extraído quando terminar
 
     res.json({ state, result });
